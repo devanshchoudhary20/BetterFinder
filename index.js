@@ -1,6 +1,13 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron/main')
-const path = require('node:path')
-const fs = require('fs')
+import { app, BrowserWindow, ipcMain, dialog } from 'electron/main';
+import path from 'node:path';
+import fs from 'fs';
+import { fileTypeFromFile } from 'file-type';
+import { fileURLToPath } from 'url';
+import { Base64 } from 'js-base64';
+const __filename = fileURLToPath(import.meta.url);
+
+// Get the directory name
+const __dirname = path.dirname(__filename);
 
 function createWindow () {
   const win = new BrowserWindow({
@@ -13,8 +20,9 @@ function createWindow () {
     }
   })
 
-  win.loadFile('index.html')
-  win.webContents.openDevTools() // Open DevTools for debugging
+  win.loadURL('http://localhost:3000/')
+  // win.loadFile('index.html')
+  win.webContents.openDevTools() 
 }
 
 app.whenReady().then(() => {
@@ -33,29 +41,49 @@ app.on('window-all-closed', () => {
   }
 })
 
-ipcMain.handle('open-folder-dialog', async () => {
-  console.log('Open folder dialog requested');
+ipcMain.on('select-folder', async (event) => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
-  console.log('Dialog result:', result);
   if (!result.canceled) {
-    return result.filePaths[0]
+    event.reply('selected-folder', result.filePaths[0])
   }
-  return null
 })
 
-ipcMain.handle('read-directory', async (event, dirPath) => {
-  console.log('Read directory requested:', dirPath);
+ipcMain.on('get-file-tree', async (event, dirPath) => {
   try {
-    const items = await fs.promises.readdir(dirPath, { withFileTypes: true })
-    const result = items.map(item => ({
-      name: item.name,
-      isDirectory: item.isDirectory(),
-      path: path.join(dirPath, item.name)
-    }))
-    console.log('Directory contents:', result);
-    return result
+    const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    const files = await Promise.all(items.map(async item => {
+      const fullPath = path.join(dirPath, item.name);
+      const extension = item.name.substring(item.name.lastIndexOf('.'));
+      let fileType = null;
+      if (!item.isDirectory()) {
+        try {
+          fileType = await fileTypeFromFile(fullPath);
+        } catch (error) {
+          console.error('Error getting file type:', error);
+        }
+      }
+      return {
+        name: item.name,
+        type: item.isDirectory() ? 'directory' : 'file',
+        filetype: fileType?.mime || null,
+        path: fullPath,
+        extension: extension
+      };
+    }));
+    event.reply('file-tree', files);
   } catch (error) {
     console.error('Error reading directory:', error);
-    throw error;
+    event.reply('file-tree', []);
   }
-})
+});
+
+ipcMain.handle('read-file', async (event, filePath) => {
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    const base64 = Base64.encode(buffer);
+    return base64
+  } catch (error) {
+    console.error('Error reading the file:', error);
+    throw new Error('Failed to read the file');
+  }
+});
